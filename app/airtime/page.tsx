@@ -1,7 +1,5 @@
 //app/airtime/page.tsx
 
-//app/airtime/page.tsx
-
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from "react"
@@ -93,7 +91,7 @@ export default function AirtimePage() {
   const backendRequestSentRef = useRef<Hex | null>(null)
 
   // Hooks
-  const { authenticated, user } = usePrivy()
+  const { authenticated, user, sendTransaction } = usePrivy()
   const { wallets } = useWallets()
 
   // Embedded wallet detection - Privy automatically creates this when user logs in
@@ -239,8 +237,8 @@ export default function AirtimePage() {
         args: [bytes32RequestId, selectedTokenObj!.address as Hex, tokenAmountForOrder]
       })
 
-      // Send transaction using embedded wallet
-      const result = await embeddedWallet.sendTransaction!({
+      // Send transaction using Privy's sendTransaction method
+      const result = await sendTransaction({
         to: CONTRACT_ADDRESS,
         data,
         value: 0n
