@@ -1,4 +1,7 @@
 //app/airtime/page.tsx
+
+//app/airtime/page.tsx
+
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from "react"
@@ -7,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, AlertCircle, AlertTriangle, Smartphone, ExternalLink } from "lucide-react"
+import { Loader2, AlertCircle, Smartphone } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 
@@ -16,12 +19,9 @@ import AuthGuard from "@/components/AuthGuard"
 import { TransactionStatusModal } from "@/components/TransactionStatusModal"
 
 import { CONTRACT_ADDRESS, CONTRACT_ABI } from "@/config/contract"
-import { ERC20_ABI } from "@/config/erc20Abi"
-import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
 import { usePrivy, useWallets } from '@privy-io/react-auth'
-import { parseUnits, toBytes, toHex, Hex, fromHex, formatUnits, encodeFunctionData } from 'viem'
+import { parseUnits, toBytes, toHex, Hex, formatUnits, encodeFunctionData } from 'viem'
 import { toast } from 'sonner'
-import { base } from 'wagmi/chains'
 
 import { buyAirtime } from "@/lib/api"
 import { TokenConfig } from "@/lib/tokenlist"
@@ -37,19 +37,13 @@ interface PrivyWallet {
   [key: string]: any
 }
 
-type TxStatus = 'idle' | 'connecting' | 'approving' | 'paying' | 'confirming' | 'processing' | 'success' | 'error'
+type TxStatus = 'idle' | 'paying' | 'processing' | 'success' | 'error'
 
 // Map our status to TransactionStatusModal expected types
 const getModalStatus = (status: TxStatus): "idle" | "approving" | "confirming" | "success" | "error" | "waitingForSignature" | "sending" | "waitingForApprovalSignature" | "approvalSuccess" | "approvalError" | "backendProcessing" | "backendSuccess" | "backendError" => {
   switch (status) {
-    case 'connecting':
-      return 'waitingForSignature'
-    case 'approving':
-      return 'waitingForApprovalSignature'
     case 'paying':
       return 'sending'
-    case 'confirming':
-      return 'confirming'
     case 'processing':
       return 'backendProcessing'
     case 'success':
@@ -99,34 +93,12 @@ export default function AirtimePage() {
   const backendRequestSentRef = useRef<Hex | null>(null)
 
   // Hooks
-  const { authenticated, connectWallet, setActiveWallet } = usePrivy()
+  const { authenticated, user } = usePrivy()
   const { wallets } = useWallets()
-  const { address, chainId } = useAccount()
 
-  // Contract interactions
-  const { writeContract: writeApprove, data: approveHash, isPending: isApproving, reset: resetApprove } = useWriteContract()
-  const { writeContract: writeOrder, data: orderHash, isPending: isOrdering, reset: resetOrder } = useWriteContract()
-  
-  const { isLoading: isApprovalConfirming, isSuccess: isApprovalConfirmed } = useWaitForTransactionReceipt({
-    hash: approveHash,
-    query: { enabled: Boolean(approveHash) }
-  })
-  
-  const { isLoading: isOrderConfirming, isSuccess: isOrderConfirmed } = useWaitForTransactionReceipt({
-    hash: orderHash,
-    query: { enabled: Boolean(orderHash) }
-  })
-
-  // Wallet detection
+  // Embedded wallet detection - Privy automatically creates this when user logs in
   const embeddedWallet = wallets.find((w: PrivyWallet) => w.walletClientType === 'privy')
-  const externalWallets = wallets.filter((w: PrivyWallet) => w.walletClientType !== 'privy')
-  const activeWallet = wallets.find((w: PrivyWallet) => w.address === address)
-  const isEmbeddedWallet = activeWallet?.walletClientType === 'privy'
-  const isOnBaseChain = chainId === base.id
-
-  // Current wallet address (either connected or available)
-  const walletAddress = address || embeddedWallet?.address
-  const hasWallet = Boolean(walletAddress)
+  const hasEmbeddedWallet = Boolean(embeddedWallet)
 
   // Derived values
   const selectedTokenObj = activeTokens.find(t => t.address === selectedToken)
@@ -135,32 +107,6 @@ export default function AirtimePage() {
   const cryptoNeeded = priceNGN && amountNGN ? amountNGN / priceNGN : 0
   const tokenAmountForOrder = selectedTokenObj ? parseUnits(cryptoNeeded.toFixed(selectedTokenObj.decimals), selectedTokenObj.decimals) : BigInt(0)
   const bytes32RequestId = requestId ? toHex(toBytes(requestId), { size: 32 }) : toHex(toBytes(""), { size: 32 })
-
-  // Check if order exists
-  const { data: existingOrder } = useReadContract({
-    address: CONTRACT_ADDRESS,
-    abi: CONTRACT_ABI,
-    functionName: 'getOrder',
-    args: [fromHex(bytes32RequestId, 'bigint')],
-    query: { enabled: Boolean(requestId && walletAddress) }
-  })
-
-  // Auto-connect embedded wallet
-  useEffect(() => {
-    const autoConnect = async () => {
-      if (authenticated && embeddedWallet && !address) {
-        try {
-          await setActiveWallet(embeddedWallet)
-          toast.success("Built-in wallet connected!")
-        } catch (error) {
-          console.error("Auto-connect failed:", error)
-        }
-      }
-    }
-    
-    const timer = setTimeout(autoConnect, 1000)
-    return () => clearTimeout(timer)
-  }, [authenticated, embeddedWallet, address, setActiveWallet])
 
   // Load tokens and prices
   useEffect(() => {
@@ -193,43 +139,12 @@ export default function AirtimePage() {
     }
   }, [selectedToken, network, amount, phone, requestId])
 
-  // Transaction monitoring
-  useEffect(() => {
-    if (isApprovalConfirmed && txStatus === 'approving') {
-      setTxStatus('paying')
-      toast.success("Token approved! Proceeding with payment...")
-      
-      // Auto-proceed with order after approval
-      setTimeout(() => {
-        if (selectedTokenObj && requestId) {
-          writeOrder({
-            address: CONTRACT_ADDRESS,
-            abi: CONTRACT_ABI,
-            functionName: 'createOrder',
-            args: [bytes32RequestId, selectedTokenObj.address as Hex, tokenAmountForOrder]
-          })
-        }
-      }, 1000)
-    }
-  }, [isApprovalConfirmed, txStatus, writeOrder, bytes32RequestId, selectedTokenObj, tokenAmountForOrder, requestId])
-
-  useEffect(() => {
-    if (isOrderConfirmed && txStatus === 'paying') {
-      setTxStatus('processing')
-      setTxHash(orderHash!)
-      toast.success("Payment confirmed! Processing order...")
-      
-      if (orderHash) {
-        handleBackendProcessing(orderHash)
-      }
-    }
-  }, [isOrderConfirmed, txStatus, orderHash])
-
   // Backend processing
   const handleBackendProcessing = useCallback(async (transactionHash: Hex) => {
     if (backendRequestSentRef.current === transactionHash) return
 
     backendRequestSentRef.current = transactionHash
+    setTxStatus('processing')
     setBackendMessage("Processing your order...")
     toast.loading("Processing with service provider...", { id: 'backend' })
 
@@ -242,7 +157,7 @@ export default function AirtimePage() {
         cryptoUsed: parseFloat(cryptoNeeded.toFixed(selectedTokenObj?.decimals || 6)),
         cryptoSymbol: selectedTokenObj?.symbol ?? "",
         transactionHash,
-        userAddress: walletAddress!
+        userAddress: embeddedWallet!.address
       })
 
       setTxStatus('success')
@@ -257,6 +172,7 @@ export default function AirtimePage() {
         setPhone("")
         setRequestId(undefined)
         backendRequestSentRef.current = null
+        setTxStatus('idle')
       }, 3000)
 
     } catch (error: any) {
@@ -266,49 +182,21 @@ export default function AirtimePage() {
                       error.message?.includes('fetch') ? 'Network error' : 
                       error.message || 'Unknown error'
       
+      setTxError(`${errorMsg}. Request ID: ${requestId}`)
       setBackendMessage(`${errorMsg}. Request ID: ${requestId}`)
       toast.error(`Order failed: ${errorMsg}`, { id: 'backend' })
     }
-  }, [requestId, phone, network, amountNGN, cryptoNeeded, selectedTokenObj, walletAddress])
+  }, [requestId, phone, network, amountNGN, cryptoNeeded, selectedTokenObj, embeddedWallet])
 
-  // Wallet connection
-  const handleConnectWallet = async () => {
-    if (!authenticated) {
-      toast.error("Please log in first")
-      return
-    }
-
-    setTxStatus('connecting')
-    
-    try {
-      if (embeddedWallet && !address) {
-        await setActiveWallet(embeddedWallet)
-        toast.success("Built-in wallet connected!")
-      } else {
-        await connectWallet()
-      }
-    } catch (error) {
-      console.error("Connection failed:", error)
-      toast.error("Failed to connect wallet")
-    } finally {
-      setTxStatus('idle')
-    }
-  }
-
-  // Transaction execution
+  // Transaction execution (embedded wallet only)
   const handlePurchase = async () => {
     if (!authenticated) {
       toast.error("Please log in first")
       return
     }
 
-    if (!walletAddress) {
-      await handleConnectWallet()
-      return
-    }
-
-    if (!isOnBaseChain) {
-      toast.error("Please switch to Base network")
+    if (!embeddedWallet) {
+      toast.error("No built-in wallet found. Please refresh the page.")
       return
     }
 
@@ -328,70 +216,58 @@ export default function AirtimePage() {
       return
     }
 
-    if (existingOrder?.user !== '0x0000000000000000000000000000000000000000') {
-      toast.error("Order already exists. Please refresh and try again.")
-      setRequestId(generateRequestId())
-      return
-    }
-
     // Start transaction
     setShowTxModal(true)
-    setTxStatus('approving')
+    setTxStatus('paying')
     setTxError(null)
     setBackendMessage(null)
     backendRequestSentRef.current = null
 
-    // Reset previous transactions
-    resetApprove()
-    resetOrder()
-
     try {
-      console.log("Starting transaction:", {
-        walletType: isEmbeddedWallet ? "Embedded" : "External",
+      console.log("Starting embedded wallet transaction:", {
         token: selectedTokenObj?.symbol,
-        amount: formatUnits(tokenAmountForOrder, selectedTokenObj!.decimals)
+        amount: formatUnits(tokenAmountForOrder, selectedTokenObj!.decimals),
+        requestId
       })
 
-      if (isEmbeddedWallet) {
-        // Embedded wallet: Direct transaction
-        toast.info("Processing with built-in wallet...")
-        
-        const data = encodeFunctionData({
-          abi: CONTRACT_ABI,
-          functionName: 'createOrder',
-          args: [bytes32RequestId, selectedTokenObj!.address as Hex, tokenAmountForOrder]
-        })
+      toast.info("Processing with built-in wallet...")
+      
+      // Create transaction data
+      const data = encodeFunctionData({
+        abi: CONTRACT_ABI,
+        functionName: 'createOrder',
+        args: [bytes32RequestId, selectedTokenObj!.address as Hex, tokenAmountForOrder]
+      })
 
-        const result = await embeddedWallet!.sendTransaction!({
-          to: CONTRACT_ADDRESS,
-          data,
-          value: 0n
-        })
+      // Send transaction using embedded wallet
+      const result = await embeddedWallet.sendTransaction!({
+        to: CONTRACT_ADDRESS,
+        data,
+        value: 0n
+      })
 
-        setTxHash(result.transactionHash as Hex)
-        setTxStatus('processing')
-        toast.success("Transaction sent! Processing order...")
-        
-        await handleBackendProcessing(result.transactionHash as Hex)
-        
-      } else {
-        // External wallet: Approval + Order
-        toast.info("Approving token spend...")
-        
-        const unlimitedApproval = parseUnits('115792089237316195423570985008687907853269984665640564039457584007913129639935', 0)
-        
-        writeApprove({
-          address: selectedTokenObj!.address as Hex,
-          abi: ERC20_ABI,
-          functionName: 'approve',
-          args: [CONTRACT_ADDRESS, unlimitedApproval]
-        })
-      }
-
+      console.log("Transaction sent:", result.transactionHash)
+      setTxHash(result.transactionHash as Hex)
+      toast.success("Transaction sent! Processing order...")
+      
+      // Process with backend
+      await handleBackendProcessing(result.transactionHash as Hex)
+      
     } catch (error: any) {
       console.error("Transaction failed:", error)
       setTxStatus('error')
-      setTxError(error.message || "Transaction failed")
+      
+      // Handle specific error types
+      if (error.message?.includes('network')) {
+        setTxError("Network error. Built-in wallets should automatically use Base network. Please contact support.")
+      } else if (error.message?.includes('insufficient')) {
+        setTxError("Insufficient token balance for this transaction.")
+      } else if (error.message?.includes('rejected')) {
+        setTxError("Transaction was rejected. Please try again.")
+      } else {
+        setTxError(error.message || "Transaction failed. Please try again.")
+      }
+      
       toast.error("Transaction failed")
     }
   }
@@ -404,10 +280,11 @@ export default function AirtimePage() {
                 amountNGN <= 50000 && 
                 phone.length >= 10 && 
                 priceNGN && 
-                tokenAmountForOrder > 0
+                tokenAmountForOrder > 0 &&
+                hasEmbeddedWallet
 
-  const isProcessing = txStatus !== 'idle' && txStatus !== 'error'
-  const isDisabled = !canPay || isProcessing || !isOnBaseChain
+  const isProcessing = ['paying', 'processing'].includes(txStatus)
+  const isDisabled = !canPay || isProcessing
 
   if (loading) {
     return (
@@ -430,66 +307,48 @@ export default function AirtimePage() {
         <div className="mb-8">
           <h1 className="text-3xl font-bold mb-2">Buy Airtime</h1>
           <p className="text-muted-foreground">
-            Purchase airtime using ERC20 tokens on Base network
+            Purchase airtime using your built-in wallet on Base network
           </p>
         </div>
 
         {/* Wallet Status */}
-        {!hasWallet && authenticated && (
+        {!authenticated && (
           <Alert className="mb-6">
             <AlertCircle className="h-4 w-4" />
             <AlertDescription>
-              <div className="flex items-center justify-between">
-                <span>Connect a wallet to start making purchases</span>
-                <Button variant="outline" size="sm" onClick={handleConnectWallet} disabled={txStatus === 'connecting'}>
-                  {txStatus === 'connecting' ? (
-                    <>
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Connecting...
-                    </>
-                  ) : embeddedWallet ? (
-                    <>
-                      <Smartphone className="w-4 h-4 mr-2" />
-                      Connect Built-in Wallet
-                    </>
-                  ) : (
-                    <>
-                      <ExternalLink className="w-4 h-4 mr-2" />
-                      Connect External Wallet
-                    </>
-                  )}
-                </Button>
-              </div>
+              Please log in to access your built-in wallet and start making purchases
             </AlertDescription>
           </Alert>
         )}
 
-        {hasWallet && !isOnBaseChain && (
-          <Alert className="mb-6 border-orange-200 bg-orange-50">
-            <AlertTriangle className="h-4 w-4 text-orange-600" />
-            <AlertDescription className="text-orange-800">
-              Please switch to Base network to continue
+        {authenticated && !hasEmbeddedWallet && (
+          <Alert className="mb-6">
+            <Smartphone className="h-4 w-4" />
+            <AlertDescription>
+              <div>
+                <p className="font-medium">Setting up your built-in wallet...</p>
+                <p className="text-sm mt-1">Please wait a moment while we initialize your wallet</p>
+              </div>
             </AlertDescription>
           </Alert>
         )}
 
         <Card>
           <CardHeader>
-            <CardTitle>Crypto to Airtime</CardTitle>
+            <CardTitle>Built-in Wallet Purchase</CardTitle>
             <CardDescription>
-              Convert your crypto to airtime instantly
+              Fast and secure airtime purchase with your built-in wallet
             </CardDescription>
-            {hasWallet && (
+            {hasEmbeddedWallet && (
               <div className="flex items-center justify-between pt-2 text-sm">
-                <div className="text-muted-foreground">
-                  {isEmbeddedWallet ? '📱 Built-in' : '🔗 External'} Wallet
+                <div className="flex items-center gap-2">
+                  <Smartphone className="w-4 h-4 text-blue-500" />
+                  <span className="text-muted-foreground">Built-in Wallet</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Badge variant={isOnBaseChain ? "default" : "destructive"}>
-                    {isOnBaseChain ? "Base Network" : "Wrong Network"}
-                  </Badge>
+                  <Badge variant="default">Base Network</Badge>
                   <span className="font-mono text-xs">
-                    {walletAddress?.slice(0, 6)}...{walletAddress?.slice(-4)}
+                    {embeddedWallet?.address?.slice(0, 6)}...{embeddedWallet?.address?.slice(-4)}
                   </span>
                 </div>
               </div>
@@ -500,9 +359,9 @@ export default function AirtimePage() {
             {/* Token Selection */}
             <div className="space-y-2">
               <Label>Pay With</Label>
-              <Select value={selectedToken} onValueChange={setSelectedToken}>
+              <Select value={selectedToken} onValueChange={setSelectedToken} disabled={!hasEmbeddedWallet}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Select token" />
+                  <SelectValue placeholder={hasEmbeddedWallet ? "Select token" : "Wallet initializing..."} />
                 </SelectTrigger>
                 <SelectContent>
                   {activeTokens.map(token => (
@@ -517,9 +376,9 @@ export default function AirtimePage() {
             {/* Network Selection */}
             <div className="space-y-2">
               <Label>Network Provider</Label>
-              <Select value={network} onValueChange={setNetwork}>
+              <Select value={network} onValueChange={setNetwork} disabled={!hasEmbeddedWallet}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Select provider" />
+                  <SelectValue placeholder={hasEmbeddedWallet ? "Select provider" : "Wallet initializing..."} />
                 </SelectTrigger>
                 <SelectContent>
                   {NETWORKS.map(n => (
@@ -549,6 +408,7 @@ export default function AirtimePage() {
                 }}
                 min="100"
                 max="50000"
+                disabled={!hasEmbeddedWallet}
               />
               {amountNGN > 0 && priceNGN && selectedTokenObj && (
                 <div className="text-sm text-muted-foreground flex items-center justify-between">
@@ -574,11 +434,12 @@ export default function AirtimePage() {
                   setPhone(cleaned.slice(0, 11))
                 }}
                 maxLength={11}
+                disabled={!hasEmbeddedWallet}
               />
             </div>
 
             {/* Transaction Summary */}
-            {requestId && (
+            {requestId && hasEmbeddedWallet && (
               <div className="border-t pt-4 space-y-2 text-sm">
                 <div className="flex justify-between">
                   <span>Request ID:</span>
@@ -598,6 +459,10 @@ export default function AirtimePage() {
                   <span>Provider:</span>
                   <span>{NETWORKS.find(n => n.serviceID === network)?.name}</span>
                 </div>
+                <div className="flex justify-between">
+                  <span>Network:</span>
+                  <span>Base (Automatic)</span>
+                </div>
               </div>
             )}
 
@@ -608,17 +473,7 @@ export default function AirtimePage() {
               disabled={isDisabled}
               size="lg"
             >
-              {txStatus === 'connecting' ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Connecting Wallet...
-                </>
-              ) : txStatus === 'approving' ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Approving Token...
-                </>
-              ) : txStatus === 'paying' ? (
+              {txStatus === 'paying' ? (
                 <>
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                   Processing Payment...
@@ -630,24 +485,20 @@ export default function AirtimePage() {
                 </>
               ) : txStatus === 'success' ? (
                 "✅ Airtime Delivered!"
-              ) : !hasWallet ? (
-                "Connect Wallet First"
-              ) : !isOnBaseChain ? (
-                "Switch to Base Network"
+              ) : !hasEmbeddedWallet ? (
+                "Wallet Initializing..."
               ) : !canPay ? (
                 "Fill All Details"
               ) : (
-                `Purchase Airtime ${isEmbeddedWallet ? '' : '(Approve + Pay)'}`
+                "Purchase Airtime"
               )}
             </Button>
 
             {/* Info */}
-            <div className="text-xs text-center text-muted-foreground">
-              {isEmbeddedWallet ? (
-                "🚀 Built-in wallet provides streamlined transactions"
-              ) : (
-                "📝 External wallets require token approval then payment"
-              )}
+            <div className="text-xs text-center text-muted-foreground space-y-1">
+              <p>🔒 Your built-in wallet is secured by your account</p>
+              <p>🌐 Automatically uses Base network for all transactions</p>
+              <p>⚡ No browser extensions or network switching required</p>
             </div>
           </CardContent>
         </Card>
