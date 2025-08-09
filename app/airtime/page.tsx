@@ -94,8 +94,11 @@ export default function AirtimePage() {
   const backendRequestSentRef = useRef<Hex | null>(null)
 
   // Hooks
-  const { authenticated, user, sendTransaction } = usePrivy()
+  const { authenticated, user } = usePrivy()
   const { wallets } = useWallets()
+  
+  // Use the newer useSendTransaction hook for better type safety
+  const { sendTransaction } = usePrivy()
 
   // Embedded wallet detection - Privy automatically creates this when user logs in
   const embeddedWallet = wallets.find((w: PrivyWallet) => w.walletClientType === 'privy')
@@ -278,8 +281,10 @@ export default function AirtimePage() {
         value: 0n
       })
 
-      console.log("Approval transaction sent:", approvalResult.transactionHash)
-      setApprovalHash(approvalResult.transactionHash as Hex)
+      console.log("Approval transaction sent:", approvalResult)
+      // Extract hash from result - could be .hash or .transactionHash depending on Privy version
+      const approvalTxHash = approvalResult.hash || approvalResult.transactionHash
+      setApprovalHash(approvalTxHash as Hex)
       toast.success("Token spending approved!")
 
       // Step 2: Create the order
@@ -298,12 +303,14 @@ export default function AirtimePage() {
         value: 0n
       })
 
-      console.log("Order transaction sent:", orderResult.transactionHash)
-      setTxHash(orderResult.transactionHash as Hex)
+      console.log("Order transaction sent:", orderResult)
+      // Extract hash from result - could be .hash or .transactionHash depending on Privy version
+      const orderTxHash = orderResult.hash || orderResult.transactionHash
+      setTxHash(orderTxHash as Hex)
       toast.success("Transaction sent! Processing order...")
       
       // Process with backend
-      await handleBackendProcessing(orderResult.transactionHash as Hex)
+      await handleBackendProcessing(orderTxHash as Hex)
       
     } catch (error: any) {
       console.error("Transaction failed:", error)
