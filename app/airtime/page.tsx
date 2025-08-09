@@ -35,11 +35,13 @@ interface PrivyWallet {
   [key: string]: any
 }
 
-type TxStatus = 'idle' | 'paying' | 'processing' | 'success' | 'error'
+type TxStatus = 'idle' | 'approving' | 'paying' | 'processing' | 'success' | 'error'
 
 // Map our status to TransactionStatusModal expected types
 const getModalStatus = (status: TxStatus): "idle" | "approving" | "confirming" | "success" | "error" | "waitingForSignature" | "sending" | "waitingForApprovalSignature" | "approvalSuccess" | "approvalError" | "backendProcessing" | "backendSuccess" | "backendError" => {
   switch (status) {
+    case 'approving':
+      return 'waitingForApprovalSignature'
     case 'paying':
       return 'sending'
     case 'processing':
@@ -88,6 +90,7 @@ export default function AirtimePage() {
   const [backendMessage, setBackendMessage] = useState<string | null>(null)
   const [showTxModal, setShowTxModal] = useState(false)
   const [txHash, setTxHash] = useState<Hex>()
+  const [approvalHash, setApprovalHash] = useState<Hex>()
   const backendRequestSentRef = useRef<Hex | null>(null)
 
   // Hooks
@@ -216,40 +219,69 @@ export default function AirtimePage() {
 
     // Start transaction
     setShowTxModal(true)
-    setTxStatus('paying')
+    setTxStatus('approving')
     setTxError(null)
     setBackendMessage(null)
     backendRequestSentRef.current = null
 
     try {
-      console.log("Starting embedded wallet transaction:", {
+      console.log("Starting token approval and transaction:", {
         token: selectedTokenObj?.symbol,
         amount: formatUnits(tokenAmountForOrder, selectedTokenObj!.decimals),
         requestId
       })
 
-      toast.info("Processing with built-in wallet...")
+      // Step 1: Approve token spending
+      toast.info("Approving token spending...")
       
-      // Create transaction data
-      const data = encodeFunctionData({
+      const approvalData = encodeFunctionData({
+        abi: [
+          {
+            name: 'approve',
+            type: 'function',
+            inputs: [
+              { name: 'spender', type: 'address' },
+              { name: 'amount', type: 'uint256' }
+            ],
+            outputs: [{ name: '', type: 'bool' }]
+          }
+        ],
+        functionName: 'approve',
+        args: [CONTRACT_ADDRESS as Hex, tokenAmountForOrder]
+      })
+
+      const approvalResult = await sendTransaction({
+        to: selectedTokenObj!.address as Hex,
+        data: approvalData,
+        value: 0n
+      })
+
+      console.log("Approval transaction sent:", approvalResult.transactionHash)
+      setApprovalHash(approvalResult.transactionHash as Hex)
+      toast.success("Token spending approved!")
+
+      // Step 2: Create the order
+      setTxStatus('paying')
+      toast.info("Creating your airtime order...")
+      
+      const orderData = encodeFunctionData({
         abi: CONTRACT_ABI,
         functionName: 'createOrder',
         args: [bytes32RequestId, selectedTokenObj!.address as Hex, tokenAmountForOrder]
       })
 
-      // Send transaction using Privy's sendTransaction method
-      const result = await sendTransaction({
+      const orderResult = await sendTransaction({
         to: CONTRACT_ADDRESS,
-        data,
+        data: orderData,
         value: 0n
       })
 
-      console.log("Transaction sent:", result.transactionHash)
-      setTxHash(result.transactionHash as Hex)
+      console.log("Order transaction sent:", orderResult.transactionHash)
+      setTxHash(orderResult.transactionHash as Hex)
       toast.success("Transaction sent! Processing order...")
       
       // Process with backend
-      await handleBackendProcessing(result.transactionHash as Hex)
+      await handleBackendProcessing(orderResult.transactionHash as Hex)
       
     } catch (error: any) {
       console.error("Transaction failed:", error)
@@ -262,6 +294,8 @@ export default function AirtimePage() {
         setTxError("Insufficient token balance for this transaction.")
       } else if (error.message?.includes('rejected')) {
         setTxError("Transaction was rejected. Please try again.")
+      } else if (error.message?.includes('allowance')) {
+        setTxError("Token approval failed. Please try again.")
       } else {
         setTxError(error.message || "Transaction failed. Please try again.")
       }
@@ -281,7 +315,7 @@ export default function AirtimePage() {
                 tokenAmountForOrder > 0 &&
                 hasEmbeddedWallet
 
-  const isProcessing = ['paying', 'processing'].includes(txStatus)
+  const isProcessing = ['approving', 'paying', 'processing'].includes(txStatus)
   const isDisabled = !canPay || isProcessing
 
   if (loading) {
@@ -471,7 +505,12 @@ export default function AirtimePage() {
               disabled={isDisabled}
               size="lg"
             >
-              {txStatus === 'paying' ? (
+              {txStatus === 'approving' ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Approving Token...
+                </>
+              ) : txStatus === 'paying' ? (
                 <>
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                   Processing Payment...
