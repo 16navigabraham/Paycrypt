@@ -150,7 +150,8 @@ export default function AirtimePage() {
     toast.loading("Processing with service provider...", { id: 'backend' })
 
     try {
-      await buyAirtime({
+      // Log the data being sent for debugging
+      const backendData = {
         requestId: requestId!,
         phone,
         serviceID: network,
@@ -159,7 +160,28 @@ export default function AirtimePage() {
         cryptoSymbol: selectedTokenObj?.symbol ?? "",
         transactionHash,
         userAddress: embeddedWallet!.address
-      })
+      }
+
+      console.log('Sending to backend:', backendData)
+
+      // Validate all fields before sending
+      if (!backendData.requestId || !backendData.phone || !backendData.serviceID || 
+          !backendData.amount || !backendData.cryptoUsed || !backendData.cryptoSymbol || 
+          !backendData.transactionHash || !backendData.userAddress) {
+        console.error('Missing required fields:', {
+          hasRequestId: !!backendData.requestId,
+          hasPhone: !!backendData.phone,
+          hasServiceID: !!backendData.serviceID,
+          hasAmount: !!backendData.amount,
+          hasCryptoUsed: !!backendData.cryptoUsed,
+          hasCryptoSymbol: !!backendData.cryptoSymbol,
+          hasTransactionHash: !!backendData.transactionHash,
+          hasUserAddress: !!backendData.userAddress
+        })
+        throw new Error('Missing required fields for backend request')
+      }
+
+      await buyAirtime(backendData)
 
       setTxStatus('success')
       setBackendMessage("Airtime delivered successfully!")
