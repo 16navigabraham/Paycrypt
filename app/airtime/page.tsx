@@ -1,24 +1,29 @@
-// app/airtime/page.tsx
+// app/airtime/page.tsx - Fixed version with embedded wallet support
 "use client"
 import { useState, useEffect, useCallback, useRef } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
-import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import {Button} from "@/components/ui/button"
-import {Label} from "@/components/ui/label"
-import {Badge} from "@/components/ui/badge"
-import { Loader2, AlertCircle } from "lucide-react"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Button } from "@/components/ui/button"
+import { Label } from "@/components/ui/label"
+import { Badge } from "@/components/ui/badge"
+import { Loader2, AlertCircle, AlertTriangle } from "lucide-react"
 import BackToDashboard from "@/components/BackToDashboard"
 import AuthGuard from "@/components/AuthGuard"
 import { Input } from "@/components/ui/input"
 
 import { CONTRACT_ADDRESS, CONTRACT_ABI } from "@/config/contract";
 import { ERC20_ABI } from "@/config/erc20Abi";
-import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract } from 'wagmi';
+import { useAccount, useReadContract } from 'wagmi';
 import { usePrivy } from '@privy-io/react-auth';
 import { parseUnits, toBytes, toHex, Hex, fromHex, formatUnits } from 'viem';
 import { toast } from 'sonner';
 import { TransactionStatusModal } from "@/components/TransactionStatusModal";
+
+// Enhanced wallet components and hooks
+import { WalletManager } from '@/components/wallet/WalletManager';
+import { useEnhancedWalletTransaction } from '@/hooks/useEnhancedWalletTransaction';
 import { useBaseNetworkEnforcer } from '@/hooks/useBaseNetworkEnforcer';
+import { NetworkStatusAlert, NetworkStatusBadge } from '@/components/NetworkStatus';
 
 import { buyAirtime } from "@/lib/api";
 import { TokenConfig } from "@/lib/tokenlist";
@@ -45,7 +50,7 @@ async function fetchPrices(tokenList: TokenConfig[]) {
 
 export default function AirtimePage() {
   const [activeTokens, setActiveTokens] = useState<TokenConfig[]>([]);
-  const [selectedToken, setSelectedToken] = useState<string>(""); // Stores the address of the selected token
+  const [selectedToken, setSelectedToken] = useState<string>("");
   const [network, setNetwork] = useState("");
   const [amount, setAmount] = useState("");
   const [phone, setPhone] = useState("");
@@ -61,8 +66,31 @@ export default function AirtimePage() {
   const backendRequestSentRef = useRef<Hex | null>(null);
 
   const { connectWallet, authenticated } = usePrivy();
-  const { address } = useAccount();
-  const { isOnBaseChain, isSwitchingChain, promptSwitchToBase } = useBaseNetworkEnforcer();
+  
+  // Enhanced hooks
+  const {
+    isOnBaseChain,
+    isSwitchingChain,
+    promptSwitchToBase,
+    isEmbeddedWallet,
+    networkStatus,
+    getStatusMessage
+  } = useBaseNetworkEnforcer();
+
+  const {
+    address,
+    isExternalWallet,
+    activeWallet,
+    executeTransaction,
+    approveToken,
+    txHash,
+    isPending,
+    isConfirming,
+    isConfirmed,
+    isError,
+    error,
+    reset: resetTransaction
+  } = useEnhancedWalletTransaction();
 
   // Load tokens and prices on initial mount
   useEffect(() => {
@@ -70,7 +98,6 @@ export default function AirtimePage() {
       setLoading(true);
       try {
         const tokens = await fetchActiveTokensWithMetadata();
-        // Filter out ETH (tokenType 0) - only ERC20 tokens supported
         setActiveTokens(tokens.filter(token => token.tokenType !== 0));
         const prices = await fetchPrices(tokens);
         setPrices(prices);
@@ -93,7 +120,7 @@ export default function AirtimePage() {
     }
   }, [selectedToken, network, amount, phone, requestId]);
 
-  // Derived values for selected token
+  // Derived values
   const selectedTokenObj = activeTokens.find(t => t.address === selectedToken);
   const priceNGN = selectedTokenObj ? prices[selectedTokenObj.coingeckoId]?.ngn : null;
   const amountNGN = Number(amount) || 0;
@@ -110,55 +137,8 @@ export default function AirtimePage() {
     query: { enabled: Boolean(requestId && address) },
   });
 
-  // Wagmi Hooks for TOKEN APPROVAL Transaction
-  const { 
-    writeContract: writeApprove, 
-    data: approveHash, 
-    isPending: isApprovePending, 
-    isError: isApproveError, 
-    error: approveWriteError,
-    reset: resetApprove 
-  } = useWriteContract();
-
-  const { 
-    isLoading: isApprovalConfirming, 
-    isSuccess: isApprovalTxConfirmed, 
-    isError: isApprovalConfirmError, 
-    error: approveConfirmError 
-  } = useWaitForTransactionReceipt({
-    hash: approveHash as Hex,
-    query: {
-      enabled: Boolean(approveHash),
-      refetchInterval: 1000,
-    },
-  });
-
-  // Wagmi Hooks for MAIN PAYMENT Transaction
-  const { 
-    writeContract, 
-    data: hash, 
-    isPending: isWritePending, 
-    isError: isWriteError, 
-    error: writeError,
-    reset: resetWrite 
-  } = useWriteContract();
-
-  const { 
-    isLoading: isConfirming, 
-    isSuccess: isConfirmed, 
-    isError: isConfirmError, 
-    error: confirmError 
-  } = useWaitForTransactionReceipt({
-    hash: hash as Hex,
-    query: {
-      enabled: Boolean(hash),
-      refetchInterval: 1000,
-    },
-  });
-
   // Handle backend API call after successful transaction
   const handlePostTransaction = useCallback(async (transactionHash: Hex) => {
-    // Prevent duplicate backend requests
     if (backendRequestSentRef.current === transactionHash) {
       console.log(`Backend request already sent for hash: ${transactionHash}. Skipping duplicate.`);
       return;
@@ -185,17 +165,15 @@ export default function AirtimePage() {
       setBackendMessage("Airtime delivered successfully!");
       toast.success("Airtime delivered successfully!", { id: 'backend-status' });
 
-    // Reset form for next transaction after a delay
-setTimeout(() => {
-  setSelectedToken("");
-  setNetwork("");
-  setAmount("");
-  setPhone("");
-  backendRequestSentRef.current = null;
-  
-  // Clear requestId slightly later to prevent immediate re-generation
-  setTimeout(() => setRequestId(undefined), 100);
-}, 3000); // 3 second delay to allow user to see success
+      // Reset form after success
+      setTimeout(() => {
+        setSelectedToken("");
+        setNetwork("");
+        setAmount("");
+        setPhone("");
+        backendRequestSentRef.current = null;
+        setTimeout(() => setRequestId(undefined), 100);
+      }, 3000);
 
     } catch (error: any) {
       setTxStatus('backendError');
@@ -213,112 +191,43 @@ setTimeout(() => {
     }
   }, [requestId, phone, network, amountNGN, cryptoNeeded, selectedTokenObj?.symbol, selectedTokenObj?.decimals, address]);
 
-  // Effect to monitor approval transaction status
+  // Monitor transaction status
   useEffect(() => {
     if (!showTransactionModal) return;
 
-    if (isApprovePending) {
-      setTxStatus('waitingForApprovalSignature');
-      setTransactionHashForModal(undefined);
-      setTransactionError(null);
-      setBackendMessage(null);
-      toast.info("Awaiting token approval signature...");
-      backendRequestSentRef.current = null;
-    } else if (approveHash && !isApprovalTxConfirmed && !isApprovalConfirming) {
-      setTxStatus('approving');
-      setTransactionHashForModal(approveHash);
-      toast.loading("Token approval sent, waiting for confirmation...", { id: 'approval-status' });
-    } else if (isApprovalConfirming) {
-      setTxStatus('approving');
-      setTransactionHashForModal(approveHash);
-      toast.loading("Token approval confirming on blockchain...", { id: 'approval-status' });
-    } else if (isApprovalTxConfirmed) {
-      setTxStatus('approvalSuccess');
-      toast.success("Token approved! Proceeding with payment...", { id: 'approval-status' });
-      
-      console.log("Approval confirmed! Initiating main transaction...");
-      
-      // Automatically proceed with main transaction
-      setTimeout(() => {
-        console.log("Contract call params:", {
-          requestId: bytes32RequestId,
-          tokenAddress: selectedTokenObj?.address,
-          amount: tokenAmountForOrder.toString()
-        });
-        
-        try {
-          setTxStatus('waitingForSignature');
-          writeContract({
-            address: CONTRACT_ADDRESS,
-            abi: CONTRACT_ABI,
-            functionName: 'createOrder',
-            args: [
-              bytes32RequestId,
-              selectedTokenObj?.address as Hex,
-              tokenAmountForOrder,
-            ],
-            value: undefined,
-          });
-        } catch (error: any) {
-          console.error("Error sending main transaction after approval:", error);
-          const errorMsg = error.message || "Failed to send main transaction after approval.";
-          setTransactionError(errorMsg);
-          setTxStatus('error');
-          toast.error(errorMsg);
-        }
-      }, 2000); // 2 second delay
-      
-    } else if (isApproveError || isApprovalConfirmError) {
-      setTxStatus('error');
-      const errorMsg = (approveWriteError?.message || approveConfirmError?.message || "Token approval failed").split('\n')[0];
-      setTransactionError(errorMsg);
-      toast.error(`Approval failed: ${errorMsg}`, { id: 'approval-status' });
-    }
-  }, [isApprovePending, approveHash, isApprovalTxConfirmed, isApprovalConfirming, isApproveError, isApprovalConfirmError, approveWriteError, approveConfirmError, showTransactionModal, bytes32RequestId, selectedTokenObj?.address, tokenAmountForOrder, writeContract]);
-
-  // Effect to monitor main transaction status
-  useEffect(() => {
-    if (!showTransactionModal) return;
-    
-    // Skip if we're in approval phase
-    if (['waitingForApprovalSignature', 'approving', 'approvalSuccess'].includes(txStatus)) {
-      return;
-    }
-
-    if (isWritePending) {
+    if (isPending) {
       setTxStatus('waitingForSignature');
       setTransactionHashForModal(undefined);
       setTransactionError(null);
       setBackendMessage(null);
-      toast.info("Awaiting wallet signature for payment...");
+      toast.info(isEmbeddedWallet ? "Processing transaction..." : "Awaiting wallet signature...");
       backendRequestSentRef.current = null;
-    } else if (hash && !isConfirmed && !isConfirming) {
+    } else if (txHash && !isConfirmed && !isConfirming) {
       setTxStatus('sending');
-      setTransactionHashForModal(hash);
-      toast.loading("Payment transaction sent, waiting for blockchain confirmation...", { id: 'tx-status' });
+      setTransactionHashForModal(txHash);
+      toast.loading("Transaction sent, waiting for confirmation...", { id: 'tx-status' });
     } else if (isConfirming) {
       setTxStatus('confirming');
-      setTransactionHashForModal(hash);
-      toast.loading("Payment transaction confirming on blockchain...", { id: 'tx-status' });
+      setTransactionHashForModal(txHash);
+      toast.loading("Transaction confirming on blockchain...", { id: 'tx-status' });
     } else if (isConfirmed) {
       if (txStatus !== 'backendProcessing' && txStatus !== 'backendSuccess' && txStatus !== 'backendError') {
         setTxStatus('success');
-        setTransactionHashForModal(hash);
-        toast.success("Blockchain transaction confirmed! Processing order...", { id: 'tx-status' });
+        setTransactionHashForModal(txHash);
+        toast.success("Transaction confirmed! Processing order...", { id: 'tx-status' });
         
-        // Process backend transaction
-        if (hash) {
-          handlePostTransaction(hash);
+        if (txHash) {
+          handlePostTransaction(txHash);
         }
       }
-    } else if (isWriteError || isConfirmError) {
+    } else if (isError) {
       setTxStatus('error');
-      const errorMsg = (writeError?.message?.split('\n')[0] || confirmError?.message?.split('\n')[0] || "Transaction failed").split('\n')[0];
+      const errorMsg = error?.split('\n')[0] || "Transaction failed";
       setTransactionError(errorMsg);
-      setTransactionHashForModal(hash);
+      setTransactionHashForModal(txHash);
       toast.error(`Transaction failed: ${errorMsg}`, { id: 'tx-status' });
     }
-  }, [isWritePending, hash, isConfirming, isConfirmed, isWriteError, isConfirmError, writeError, confirmError, txStatus, handlePostTransaction, showTransactionModal]);
+  }, [isPending, txHash, isConfirming, isConfirmed, isError, error, txStatus, handlePostTransaction, showTransactionModal, isEmbeddedWallet]);
 
   const ensureWalletConnected = async () => {
     if (!authenticated) {
@@ -327,7 +236,7 @@ setTimeout(() => {
       return false;
     }
     if (!address) {
-      toast.error("No wallet found. Please ensure a wallet is connected via Privy.");
+      toast.error("No wallet found. Please connect a wallet.");
       await connectWallet();
       return false;
     }
@@ -357,28 +266,25 @@ setTimeout(() => {
       return;
     }
 
-    // Validate phone number format
+    // Validation
     if (phone.length < 10 || phone.length > 11) {
       toast.error("Please enter a valid Nigerian phone number (10-11 digits).");
       setTxStatus('error');
       return;
     }
 
-    // Validate amount range
     if (amountNGN < 100 || amountNGN > 50000) {
       toast.error("Amount must be between ₦100 and ₦50,000.");
       setTxStatus('error');
       return;
     }
 
-    // Validate crypto calculation
     if (!priceNGN || cryptoNeeded <= 0) {
       toast.error("Unable to calculate crypto amount. Please try again.");
       setTxStatus('error');
       return;
     }
 
-    // Validate token amount calculation
     if (tokenAmountForOrder <= 0) {
       toast.error("Invalid token amount calculated. Please try again.");
       setTxStatus('error');
@@ -393,20 +299,16 @@ setTimeout(() => {
       return;
     }
 
-    console.log("--- Initiating ERC20 Transaction Flow ---");
+    console.log("--- Initiating Transaction Flow ---");
+    console.log("Wallet Type:", isEmbeddedWallet ? "Embedded" : "External");
     console.log("RequestId (bytes32):", bytes32RequestId);
     console.log("Token Address:", selectedTokenObj.address);
     console.log("TokenAmount for Order:", tokenAmountForOrder.toString());
     console.log("Formatted amount:", formatUnits(tokenAmountForOrder, selectedTokenObj.decimals));
-    console.log("Selected Crypto:", selectedTokenObj.symbol);
-    console.log("Crypto needed (float):", cryptoNeeded);
-    console.log("Price NGN:", priceNGN);
-    console.log("Amount NGN:", amountNGN);
     console.log("----------------------------------------");
 
     // Reset previous transaction states
-    resetApprove();
-    resetWrite();
+    resetTransaction();
 
     if (!selectedTokenObj.address) {
       toast.error("Selected crypto has no contract address.");
@@ -414,25 +316,43 @@ setTimeout(() => {
       return;
     }
 
-    // COMPULSORY TOKEN APPROVAL - Always start with approval for all ERC20 tokens
-    toast.info("Approving token spend for this transaction...");
-    setTxStatus('waitingForApprovalSignature');
-    
     try {
-      // Approve unlimited amount for convenience (standard practice)
+      // Step 1: Token Approval
+      toast.info("Approving token spend...");
+      setTxStatus('waitingForApprovalSignature');
+      
       const unlimitedApproval = parseUnits('115792089237316195423570985008687907853269984665640564039457584007913129639935', 0);
       
       console.log("Approving unlimited amount for future transactions");
       
-      writeApprove({
-        address: selectedTokenObj.address as Hex,
-        abi: ERC20_ABI,
-        functionName: 'approve',
-        args: [CONTRACT_ADDRESS, unlimitedApproval],
+      await approveToken(
+        selectedTokenObj.address as Hex,
+        CONTRACT_ADDRESS,
+        unlimitedApproval,
+        ERC20_ABI
+      );
+
+      // Wait a moment for approval to be processed
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Step 2: Main Payment Transaction
+      console.log("Proceeding with main transaction...");
+      setTxStatus('waitingForSignature');
+      
+      await executeTransaction({
+        address: CONTRACT_ADDRESS,
+        abi: CONTRACT_ABI,
+        functionName: 'createOrder',
+        args: [
+          bytes32RequestId,
+          selectedTokenObj.address as Hex,
+          tokenAmountForOrder,
+        ],
       });
+
     } catch (error: any) {
-      console.error("Error sending approval transaction:", error);
-      const errorMsg = error.message || "Failed to send approval transaction.";
+      console.error("Transaction error:", error);
+      const errorMsg = error.message || "Transaction failed.";
       setTransactionError(errorMsg);
       setTxStatus('error');
       toast.error(errorMsg);
@@ -462,9 +382,9 @@ setTimeout(() => {
 
   const isButtonDisabled = loading || !canPay ||
                            ['waitingForApprovalSignature', 'approving', 'waitingForSignature', 'sending', 'confirming', 'backendProcessing'].includes(txStatus) ||
-                           isApprovePending || isApprovalConfirming || 
-                           isWritePending || isConfirming || 
-                           !isOnBaseChain || isSwitchingChain;
+                           isPending || isConfirming || 
+                           !isOnBaseChain || isSwitchingChain ||
+                           networkStatus === 'embedded-wrong-chain';
 
   if (loading) return (
     <AuthGuard>
@@ -481,17 +401,44 @@ setTimeout(() => {
     <AuthGuard>
       <div className="container py-10 max-w-xl mx-auto">
         <BackToDashboard />
+        
         <h1 className="text-3xl font-bold mb-4">Buy Airtime</h1>
-        <p className="text-muted-foreground mb-8">
+        <p className="text-muted-foreground mb-6">
           Purchase airtime using supported ERC20 cryptocurrencies on Base chain.
         </p>
+
+        {/* Network Status Alert - shows different messages for embedded vs external wallets */}
+        {address && <NetworkStatusAlert />}
+
+        {/* Wallet Management Section - only show if no wallet connected */}
+        {!address && (
+          <div className="mb-6">
+            <WalletManager />
+          </div>
+        )}
+
         <Card>
           <CardHeader>
             <CardTitle>Crypto to Airtime Payment</CardTitle>
             <CardDescription>
               Preview and calculate your airtime purchase with crypto
             </CardDescription>
+            {/* Enhanced wallet status in header */}
+            {address && (
+              <div className="flex items-center justify-between pt-2">
+                <div className="text-sm text-muted-foreground">
+                  Wallet: {isEmbeddedWallet ? '📱 Built-in' : '🔗 External'}
+                </div>
+                <div className="flex items-center gap-2">
+                  <NetworkStatusBadge />
+                  <div className="text-xs font-mono text-muted-foreground">
+                    {address.slice(0, 6)}...{address.slice(-4)}
+                  </div>
+                </div>
+              </div>
+            )}
           </CardHeader>
+          
           <CardContent className="space-y-6">
             {/* Token selection */}
             <div className="space-y-2">
@@ -550,7 +497,7 @@ setTimeout(() => {
                     setAmount("");
                   } else {
                     const numVal = Math.max(0, parseInt(val));
-                    setAmount(String(Math.min(numVal, 50000))); // Cap at 50k
+                    setAmount(String(Math.min(numVal, 50000)));
                   }
                 }}
                 min="100"
@@ -594,14 +541,47 @@ setTimeout(() => {
               )}
             </div>
 
-            {/* Compulsory token approval info */}
-            {selectedTokenObj && (
+            {/* Enhanced transaction info for different wallet types */}
+            {selectedTokenObj && address && (
               <div className="text-sm p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 mb-2">
                   <AlertCircle className="w-4 h-4 text-blue-500" />
-                  <span className="text-blue-700">
-                    Token approval required for all ERC20 transactions
+                  <span className="text-blue-700 font-medium">
+                    Transaction Method: {isEmbeddedWallet ? 'Built-in Wallet' : 'External Wallet'}
                   </span>
+                </div>
+                <div className="text-blue-600 text-xs">
+                  {isEmbeddedWallet 
+                    ? "✨ Streamlined process: Token approval and payment in one step" 
+                    : "📝 Two-step process: Token approval, then payment transaction"
+                  }
+                </div>
+              </div>
+            )}
+
+            {/* Network warning for wrong chain */}
+            {address && !isOnBaseChain && (
+              <div className="text-sm p-3 bg-orange-50 border border-orange-200 rounded-lg">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-orange-500" />
+                    <span className="text-orange-700 font-medium">
+                      {isEmbeddedWallet 
+                        ? 'Network configuration issue detected'
+                        : 'Please switch to Base network'
+                      }
+                    </span>
+                  </div>
+                  {!isEmbeddedWallet && (
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={promptSwitchToBase}
+                      disabled={isSwitchingChain}
+                    >
+                      Switch
+                    </Button>
+                  )}
                 </div>
               </div>
             )}
@@ -651,24 +631,25 @@ setTimeout(() => {
               onClick={handlePurchase}
               disabled={isButtonDisabled}
             >
-              {isSwitchingChain ? "Switching Network..." :
+              {networkStatus === 'switching' ? "Switching Network..." :
+              networkStatus === 'external-wrong-chain' ? "Switch to Base Network" :
+              networkStatus === 'embedded-wrong-chain' ? "Network Issue - Contact Support" :
+              networkStatus === 'disconnected' ? "Connect Wallet First" :
               !isOnBaseChain ? "Switch to Base Network" :
-              txStatus === 'waitingForApprovalSignature' ? "Awaiting Approval Signature..." :
-              txStatus === 'approving' ? "Approving Token..." :
-              txStatus === 'approvalSuccess' ? "Approval Complete - Starting Payment..." :
-              txStatus === 'waitingForSignature' ? "Awaiting Payment Signature..." :
+              txStatus === 'waitingForApprovalSignature' ? "Awaiting Approval..." :
+              txStatus === 'waitingForSignature' ? (isEmbeddedWallet ? "Processing..." : "Awaiting Signature...") :
               txStatus === 'sending' ? "Sending Payment..." :
               txStatus === 'confirming' ? "Confirming Payment..." :
               txStatus === 'success' ? "Payment Confirmed!" :
               txStatus === 'backendProcessing' ? "Processing Order..." :
-              txStatus === 'backendSuccess' ? "Airtime Delivered Successfully!" :
+              txStatus === 'backendSuccess' ? "Airtime Delivered!" :
               txStatus === 'backendError' ? "Order Failed - Try Again" :
               txStatus === 'error' ? "Transaction Failed - Try Again" :
-              canPay ? "Approve & Purchase Airtime" :
+              canPay ? (isEmbeddedWallet ? "Purchase Airtime" : "Approve & Purchase Airtime") :
               "Fill all details"}
             </Button>
 
-            {/* Active tokens info */}
+            {/* Enhanced info sections */}
             {activeTokens.length > 0 && (
               <div className="text-xs text-muted-foreground p-3 bg-muted/50 rounded-lg">
                 <p className="font-medium mb-1">Active ERC20 Tokens ({activeTokens.length}):</p>
@@ -676,10 +657,21 @@ setTimeout(() => {
               </div>
             )}
 
-            {/* Transaction flow info */}
+            {/* Enhanced transaction flow info */}
             <div className="text-xs text-muted-foreground p-3 bg-blue-50 rounded-lg">
               <p className="font-medium mb-1">Transaction Flow:</p>
-              <p>1. Token Approval → 2. Payment Transaction → 3. Order Processing</p>
+              <p>
+                {isEmbeddedWallet 
+                  ? "1. Approve & Pay (Combined) → 2. Order Processing" 
+                  : "1. Token Approval → 2. Payment Transaction → 3. Order Processing"
+                }
+              </p>
+              {isEmbeddedWallet && (
+                <p className="text-green-600 mt-1">✨ Faster with built-in wallet</p>
+              )}
+              <p className="mt-1">
+                Network: <span className="font-mono">Base ({networkStatus})</span>
+              </p>
             </div>
           </CardContent>
         </Card>
