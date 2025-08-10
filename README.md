@@ -111,6 +111,10 @@ Frontend Engineer | React & Web3
 Blockchain Developer | React & Solidity  
 [GitHub](https://github.com/16navigabraham/)
 
+**Afolabi Emmaunuel**
+Project Manager | Blockchain developer | solidity
+[GitHub](https://github.com/Spagero763/)
+
 
 ---
 
