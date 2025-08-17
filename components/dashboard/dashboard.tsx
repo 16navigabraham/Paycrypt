@@ -84,7 +84,7 @@ export function Dashboard() {
             </div>
 
            {/* Quick Actions Card */}
-              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <div className="bg-sky-400 rounded-xl shadow-sm border border-sky-200 p-6">
                 <div className="flex items-center justify-between mb-6">
                   <h2 className="text-xl font-semibold text-gray-900">
                     Quick Actions
@@ -97,7 +97,7 @@ export function Dashboard() {
           <div className="lg:col-span-1">
          <div className="space-y-6">
              {/* Market Data Card */}
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+            <div className="bg-sky-400 rounded-xl shadow-sm border border-sky-200 p-6">
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-2xl font-semibold text-gray-900">
                   Market Data
